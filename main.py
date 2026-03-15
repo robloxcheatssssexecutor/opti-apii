@@ -12,6 +12,7 @@ cur.execute("""
 CREATE TABLE IF NOT EXISTS users(
     username TEXT UNIQUE,
     password TEXT,
+    plan TEXT,
     expiry TEXT
 )
 """)
@@ -30,17 +31,26 @@ def login(data: dict):
 
     user = data["user"]
     pwd = hash_pass(data["pass"])
+    days = data["days"]
+    plan = data["plan"]
 
-    cur.execute("SELECT expiry FROM users WHERE username=? AND password=?", (user, pwd))
+    cur.execute("SELECT plan, expiry FROM users WHERE username=? AND password=?", (user, pwd))
     row = cur.fetchone()
 
     if not row:
         return {"ok": False}
 
-    if datetime.now() > datetime.fromisoformat(row[0]):
+    plan = row[0]
+    expiry = row[1]
+
+    if datetime.now() > datetime.fromisoformat(expiry):
         return {"ok": False, "expired": True}
 
-    return {"ok": True, "expiry": row[0]}
+    return {
+    "ok": True,
+    "plan": plan,
+    "expiry": expiry
+}
 
 @app.post("/create")
 def create_user(data: dict):
@@ -55,8 +65,8 @@ def create_user(data: dict):
     expiry = (datetime.now() + timedelta(days=days)).isoformat()
 
     cur.execute(
-        "INSERT OR REPLACE INTO users VALUES (?,?,?)",
-        (user, pwd, expiry)
+        "INSERT OR REPLACE INTO users VALUES (?,?,?,?)",
+        (user, pwd, plan, expiry)
     )
 
     conn.commit()
