@@ -13,7 +13,8 @@ CREATE TABLE users(
     username TEXT UNIQUE,
     password TEXT,
     expiry TEXT,
-    plan TEXT
+    plan TEXT,
+    discord_id TEXT
 )
 """)
 conn.commit()
@@ -60,12 +61,13 @@ def create_user(data: dict):
     pwd = hash_pass(data["pass"])
     days = data["days"]
     plan = data.get("plan", "free")
+    discord_id = data.get("discord_id", "unknown")
 
     expiry = (datetime.now() + timedelta(days=days)).isoformat()
 
     cur.execute(
-        "INSERT OR REPLACE INTO users VALUES (?,?,?,?)",
-        (user, pwd, expiry, plan)
+        "INSERT OR REPLACE INTO users VALUES (?,?,?,?,?)",
+        (user, pwd, expiry, plan, discord_id)
     )
 
     conn.commit()
