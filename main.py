@@ -72,6 +72,27 @@ def create_user(data: dict):
 
     return {"ok": True}
 
+@app.get("/users")
+def get_users(api_key: str):
+
+    if api_key != API_KEY:
+        return {"ok": False}
+
+    cur.execute("SELECT username, plan, expiry FROM users")
+    rows = cur.fetchall()
+
+    return {
+        "ok": True,
+        "users": [
+            {
+                "user": r[0],
+                "plan": r[1],
+                "expiry": r[2]
+            }
+            for r in rows
+        ]
+    }
+
 if __name__ == "__main__":
     import os
     import uvicorn
