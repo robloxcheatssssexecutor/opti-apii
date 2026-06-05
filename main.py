@@ -189,6 +189,22 @@ def change_plan(data: dict):
     return {"ok": True, "status": "plan updated"}
 
 
+@app.post("/setlicense")
+def set_license(data: dict):
+    if data.get("api_key") != API_KEY:
+        return {"ok": False, "error": "invalid api key"}
+
+    user = data.get("user", "").strip()
+    days = int(data.get("days", 0))
+    if not _get_user(user):
+        return {"ok": False, "error": "user not found"}
+
+    new_expiry = (datetime.now() + timedelta(days=days)).isoformat()
+    cur.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
+    conn.commit()
+    return {"ok": True, "status": "license set", "expiry": new_expiry}
+
+
 @app.post("/addtime")
 def add_time(data: dict):
     if data.get("api_key") != API_KEY:
