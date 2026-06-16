@@ -6,14 +6,20 @@ import os
 import json
 import requests as req
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# ── Cargar variables de entorno ───────────────────────────────────────────────
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ── Configuración ──────────────────────────────────────────────────────────────
-API_KEY     = "X9qP_7ZkL_Opt_2026_ProKey#91"
-VALID_PLANS = ["free", "premium", "ultra", "owner"]
-
-BACKUP_WEBHOOK = "https://discord.com/api/webhooks/1516439139505930240/Fe-qa8PUqylFgGcLWRE8BzssaOdJR4S_o71f9kkbzlS62eeXpC1BjwPO7w-7__fEuMOt"
+API_KEY        = os.environ.get("API_KEY", "X9qP_7ZkL_Opt_2026_ProKey#91")
+BACKUP_WEBHOOK = os.environ.get("BACKUP_WEBHOOK", "")
+VALID_PLANS    = ["free", "premium", "ultra", "owner"]
 
 DB_PATH  = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "users.db"))
+
+
+
 _db_lock = threading.Lock()
 
 # ── SQLite ─────────────────────────────────────────────────────────────────────
@@ -42,7 +48,7 @@ def _init_db():
 
 _init_db()
 
-# ── Backup via webhook ─────────────────────────────────────────────────────────
+# ── Backup ─────────────────────────────────────────────────────────────────────
 
 def _snapshot_all() -> list:
     with _new_conn() as conn:
@@ -53,12 +59,19 @@ def _snapshot_all() -> list:
 
 
 def backup_and_push():
-    """Genera snapshot de todos los usuarios y lo sube al canal via webhook."""
+    """
+    Genera snapshot de todos los usuarios y lo sube al canal via webhook.
+    """
     users   = _snapshot_all()
     payload = json.dumps({
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "users": users,
     }, ensure_ascii=False, indent=2)
+
+    if not BACKUP_WEBHOOK:
+        print("[BACKUP] BACKUP_WEBHOOK no configurado, backup omitido.")
+        return False
+
     try:
         resp = req.post(
             BACKUP_WEBHOOK,
@@ -124,6 +137,16 @@ def db_empty(api_key: str):
     with _new_conn() as conn:
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     return {"ok": True, "empty": count == 0}
+
+@app.post("/backup/force")
+def force_backup(data: dict):
+    """Fuerza un backup manual ahora mismo."""
+    if data.get("api_key") != API_KEY:
+        return {"ok": False, "error": "invalid api key"}
+
+    ok = backup_and_push()
+    users = _snapshot_all()
+    return {"ok": ok, "users_backed_up": len(users)}
 
 
 @app.post("/login")
