@@ -1,58 +1,129 @@
 from fastapi import FastAPI
 import sqlite3
 import hashlib
+import threading
+import os
+import json
+import requests as req
 from datetime import datetime, timedelta
 
-API_KEY = "X9qP_7ZkL_Opt_2026_ProKey#91"
+# ── Configuración ──────────────────────────────────────────────────────────────
+API_KEY     = "X9qP_7ZkL_Opt_2026_ProKey#91"
 VALID_PLANS = ["free", "premium", "ultra", "owner"]
 
-conn = sqlite3.connect("users.db", check_same_thread=False)
-cur = conn.cursor()
+BACKUP_WEBHOOK = "https://discord.com/api/webhooks/1516439139505930240/Fe-qa8PUqylFgGcLWRE8BzssaOdJR4S_o71f9kkbzlS62eeXpC1BjwPO7w-7__fEuMOt"
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users(
-    username TEXT UNIQUE,
-    password TEXT,
-    expiry TEXT,
-    plan TEXT,
-    discord_id TEXT
-)
-""")
-conn.commit()
+DB_PATH  = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "users.db"))
+_db_lock = threading.Lock()
+
+# ── SQLite ─────────────────────────────────────────────────────────────────────
+
+def _new_conn():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
 
 
-def hash_pass(p):
+def _init_db():
+    with _new_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users(
+                username   TEXT PRIMARY KEY,
+                password   TEXT NOT NULL,
+                expiry     TEXT NOT NULL,
+                plan       TEXT NOT NULL DEFAULT 'free',
+                discord_id TEXT
+            )
+        """)
+        conn.commit()
+
+
+_init_db()
+
+# ── Backup via webhook ─────────────────────────────────────────────────────────
+
+def _snapshot_all() -> list:
+    with _new_conn() as conn:
+        rows = conn.execute(
+            "SELECT username, password, expiry, plan, discord_id FROM users"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def backup_and_push():
+    """Genera snapshot de todos los usuarios y lo sube al canal via webhook."""
+    users   = _snapshot_all()
+    payload = json.dumps({
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "users": users,
+    }, ensure_ascii=False, indent=2)
+    try:
+        resp = req.post(
+            BACKUP_WEBHOOK,
+            files={"file": ("backup.json", payload.encode(), "application/json")},
+            data={"content": f"📦 **Backup** — {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC | {len(users)} usuarios"},
+            timeout=15,
+        )
+        ok = resp.status_code in (200, 204)
+        print(f"[BACKUP] {'OK' if ok else 'FAIL'} ({len(users)} usuarios) status={resp.status_code}")
+        return ok
+    except Exception as e:
+        print(f"[BACKUP] Error enviando webhook: {e}")
+        return False
+
+# ── Helpers internos ───────────────────────────────────────────────────────────
+
+def hash_pass(p: str) -> str:
     return hashlib.sha256(p.encode()).hexdigest()
 
 
-def _get_user(username):
-    cur.execute(
-        "SELECT username, password, expiry, plan, discord_id FROM users WHERE username=?",
-        (username,),
-    )
-    row = cur.fetchone()
-    if not row:
-        return None
-    return {
-        "username": row[0],
-        "password": row[1],
-        "expiry": row[2],
-        "plan": row[3],
-        "discord_id": row[4],
-    }
+def _get_user(username: str):
+    with _new_conn() as conn:
+        row = conn.execute(
+            "SELECT username, password, expiry, plan, discord_id FROM users WHERE username=?",
+            (username,),
+        ).fetchone()
+    return dict(row) if row else None
 
-
-def _user_row_to_dict(rowid, row):
-    return {
-        "id": rowid,
-        "user": row[0],
-        "plan": row[2],
-        "expiry": row[3],
-        "discord_id": row[4] or "",
-    }
-
-
+# ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI()
+
+
+# ── Endpoint de restore (llamado por el bot al arrancar) ───────────────────────
+@app.post("/restore")
+def restore(data: dict):
+    """El bot llama a este endpoint con el último backup cuando la DB está vacía."""
+    if data.get("api_key") != API_KEY:
+        return {"ok": False, "error": "invalid api key"}
+
+    users = data.get("users")
+    if not isinstance(users, list):
+        return {"ok": False, "error": "users must be a list"}
+
+    with _db_lock:
+        with _new_conn() as conn:
+            conn.execute("DELETE FROM users")
+            for u in users:
+                conn.execute(
+                    "INSERT OR REPLACE INTO users (username, password, expiry, plan, discord_id) VALUES (?,?,?,?,?)",
+                    (u["username"], u["password"], u["expiry"], u["plan"], u.get("discord_id", "")),
+                )
+            conn.commit()
+
+    print(f"[RESTORE] Restaurados {len(users)} usuarios desde el bot.")
+    return {"ok": True, "restored": len(users)}
+
+
+@app.get("/db_empty")
+def db_empty(api_key: str):
+    """El bot consulta esto para saber si tiene que restaurar."""
+    if api_key != API_KEY:
+        return {"ok": False}
+    with _new_conn() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    return {"ok": True, "empty": count == 0}
 
 
 @app.post("/login")
@@ -61,17 +132,28 @@ def login(data: dict):
         return {"ok": False}
 
     user = data.get("user", "")
-    pwd = hash_pass(data.get("pass", ""))
+    pwd  = hash_pass(data.get("pass", ""))
 
-    cur.execute("SELECT expiry, plan FROM users WHERE username=? AND password=?", (user, pwd))
-    row = cur.fetchone()
+    with _new_conn() as conn:
+        row = conn.execute(
+            "SELECT expiry, plan FROM users WHERE username=? AND password=?",
+            (user, pwd),
+        ).fetchone()
+
     if not row:
         return {"ok": False}
 
-    if datetime.now() > datetime.fromisoformat(row[0]):
+    expiry_dt = datetime.fromisoformat(row["expiry"])
+    if datetime.now() > expiry_dt:
         return {"ok": False, "expired": True}
 
-    return {"ok": True, "expiry": row[0], "plan": row[1]}
+    dias_restantes = (expiry_dt - datetime.now()).days
+    return {
+        "ok": True,
+        "expiry": row["expiry"],
+        "plan": row["plan"],
+        "days_left": dias_restantes,
+    }
 
 
 @app.post("/create")
@@ -79,10 +161,10 @@ def create_user(data: dict):
     if data.get("api_key") != API_KEY:
         return {"ok": False, "error": "invalid api key"}
 
-    user = data.get("user", "").strip()
-    pwd = hash_pass(data.get("pass", ""))
-    days = int(data.get("days", 0))
-    plan = (data.get("plan") or "free").lower()
+    user       = data.get("user", "").strip()
+    pwd        = hash_pass(data.get("pass", ""))
+    days       = int(data.get("days", 0))
+    plan       = (data.get("plan") or "free").lower()
     discord_id = data.get("discord_id", "unknown")
 
     if not user:
@@ -91,12 +173,22 @@ def create_user(data: dict):
         return {"ok": False, "error": "invalid plan"}
 
     expiry = (datetime.now() + timedelta(days=days)).isoformat()
-    cur.execute(
-        "INSERT OR REPLACE INTO users VALUES (?,?,?,?,?)",
-        (user, pwd, expiry, plan, discord_id),
-    )
-    conn.commit()
-    return {"ok": True}
+
+    with _db_lock:
+        with _new_conn() as conn:
+            existing = conn.execute(
+                "SELECT username FROM users WHERE username=?", (user,)
+            ).fetchone()
+            if existing:
+                return {"ok": False, "error": "user already exists"}
+            conn.execute(
+                "INSERT INTO users (username, password, expiry, plan, discord_id) VALUES (?,?,?,?,?)",
+                (user, pwd, expiry, plan, discord_id),
+            )
+            conn.commit()
+
+    backup_and_push()
+    return {"ok": True, "expiry": expiry}
 
 
 @app.post("/listusers")
@@ -105,19 +197,22 @@ def list_users(data: dict):
         return {"ok": False, "error": "invalid api key"}
 
     search = (data.get("search") or "").strip().lower()
-    cur.execute("SELECT rowid, username, password, expiry, plan, discord_id FROM users ORDER BY username")
-    rows = cur.fetchall()
+
+    with _new_conn() as conn:
+        rows = conn.execute(
+            "SELECT rowid, username, expiry, plan, discord_id FROM users ORDER BY username"
+        ).fetchall()
 
     users = []
-    for rowid, username, _pwd, expiry, plan, discord_id in rows:
-        if search and search not in username.lower():
+    for row in rows:
+        if search and search not in row["username"].lower():
             continue
         users.append({
-            "id": rowid,
-            "user": username,
-            "plan": plan,
-            "expiry": expiry,
-            "discord_id": discord_id or "",
+            "id":         row["rowid"],
+            "user":       row["username"],
+            "plan":       row["plan"],
+            "expiry":     row["expiry"],
+            "discord_id": row["discord_id"] or "",
         })
 
     return {"ok": True, "users": users}
@@ -138,14 +233,22 @@ def edit_user(data: dict):
 
     pwd = hash_pass(new_pass) if new_pass else existing["password"]
 
-    if old_user != new_user:
-        cur.execute("DELETE FROM users WHERE username=?", (old_user,))
+    with _db_lock:
+        with _new_conn() as conn:
+            if old_user != new_user:
+                conn.execute(
+                    "INSERT OR REPLACE INTO users (username, password, expiry, plan, discord_id) VALUES (?,?,?,?,?)",
+                    (new_user, pwd, existing["expiry"], existing["plan"], existing["discord_id"]),
+                )
+                conn.execute("DELETE FROM users WHERE username=?", (old_user,))
+            else:
+                conn.execute(
+                    "UPDATE users SET password=? WHERE username=?",
+                    (pwd, old_user),
+                )
+            conn.commit()
 
-    cur.execute(
-        "INSERT OR REPLACE INTO users VALUES (?,?,?,?,?)",
-        (new_user, pwd, existing["expiry"], existing["plan"], existing["discord_id"]),
-    )
-    conn.commit()
+    backup_and_push()
     return {"ok": True}
 
 
@@ -154,20 +257,23 @@ def change_password(data: dict):
     if data.get("api_key") != API_KEY:
         return {"ok": False, "error": "invalid api key"}
 
-    user = data.get("user", "").strip()
+    user     = data.get("user", "").strip()
     raw_pass = data.get("new_pass") or data.get("pass")
+
     if not user or not raw_pass:
         return {"ok": False, "error": "user and password required"}
-
-    existing = _get_user(user)
-    if not existing:
+    if not _get_user(user):
         return {"ok": False, "error": "user not found"}
 
-    cur.execute(
-        "UPDATE users SET password=? WHERE username=?",
-        (hash_pass(raw_pass), user),
-    )
-    conn.commit()
+    with _db_lock:
+        with _new_conn() as conn:
+            conn.execute(
+                "UPDATE users SET password=? WHERE username=?",
+                (hash_pass(raw_pass), user),
+            )
+            conn.commit()
+
+    backup_and_push()
     return {"ok": True, "status": "password updated"}
 
 
@@ -176,7 +282,7 @@ def change_plan(data: dict):
     if data.get("api_key") != API_KEY:
         return {"ok": False, "error": "invalid api key"}
 
-    user = data.get("user", "").strip()
+    user     = data.get("user", "").strip()
     new_plan = (data.get("plan") or "").lower()
 
     if new_plan not in VALID_PLANS:
@@ -184,8 +290,12 @@ def change_plan(data: dict):
     if not _get_user(user):
         return {"ok": False, "error": "user not found"}
 
-    cur.execute("UPDATE users SET plan=? WHERE username=?", (new_plan, user))
-    conn.commit()
+    with _db_lock:
+        with _new_conn() as conn:
+            conn.execute("UPDATE users SET plan=? WHERE username=?", (new_plan, user))
+            conn.commit()
+
+    backup_and_push()
     return {"ok": True, "status": "plan updated"}
 
 
@@ -196,12 +306,18 @@ def set_license(data: dict):
 
     user = data.get("user", "").strip()
     days = int(data.get("days", 0))
+
     if not _get_user(user):
         return {"ok": False, "error": "user not found"}
 
     new_expiry = (datetime.now() + timedelta(days=days)).isoformat()
-    cur.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
-    conn.commit()
+
+    with _db_lock:
+        with _new_conn() as conn:
+            conn.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
+            conn.commit()
+
+    backup_and_push()
     return {"ok": True, "status": "license set", "expiry": new_expiry}
 
 
@@ -212,6 +328,7 @@ def add_time(data: dict):
 
     user = data.get("user", "").strip()
     days = int(data.get("days", 0))
+
     existing = _get_user(user)
     if not existing:
         return {"ok": False, "error": "user not found"}
@@ -221,8 +338,12 @@ def add_time(data: dict):
         expiry_date = datetime.now()
     new_expiry = (expiry_date + timedelta(days=days)).isoformat()
 
-    cur.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
-    conn.commit()
+    with _db_lock:
+        with _new_conn() as conn:
+            conn.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
+            conn.commit()
+
+    backup_and_push()
     return {"ok": True, "status": "time added", "expiry": new_expiry}
 
 
@@ -233,15 +354,20 @@ def remove_time(data: dict):
 
     user = data.get("user", "").strip()
     days = int(data.get("days", 0))
+
     existing = _get_user(user)
     if not existing:
         return {"ok": False, "error": "user not found"}
 
     expiry_date = datetime.fromisoformat(existing["expiry"])
-    new_expiry = (expiry_date - timedelta(days=days)).isoformat()
+    new_expiry  = (expiry_date - timedelta(days=days)).isoformat()
 
-    cur.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
-    conn.commit()
+    with _db_lock:
+        with _new_conn() as conn:
+            conn.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
+            conn.commit()
+
+    backup_and_push()
     return {"ok": True, "status": "time removed", "expiry": new_expiry}
 
 
@@ -251,12 +377,27 @@ def delete_user(data: dict):
         return {"ok": False, "error": "invalid api key"}
 
     user = data.get("user", "").strip()
+
     if not _get_user(user):
         return {"ok": False, "error": "user not found"}
 
-    cur.execute("DELETE FROM users WHERE username=?", (user,))
-    conn.commit()
+    with _db_lock:
+        with _new_conn() as conn:
+            conn.execute("DELETE FROM users WHERE username=?", (user,))
+            conn.commit()
+
+    backup_and_push()
     return {"ok": True, "status": "user deleted"}
+
+
+def _row_to_dict(row) -> dict:
+    return {
+        "id":         row["rowid"],
+        "user":       row["username"],
+        "plan":       row["plan"],
+        "expiry":     row["expiry"],
+        "discord_id": row["discord_id"] or "",
+    }
 
 
 @app.get("/users")
@@ -264,12 +405,12 @@ def get_users(api_key: str):
     if api_key != API_KEY:
         return {"ok": False}
 
-    cur.execute("SELECT rowid, username, password, expiry, plan, discord_id FROM users")
-    rows = cur.fetchall()
-    return {
-        "ok": True,
-        "users": [_user_row_to_dict(r[0], (r[1], r[2], r[4], r[3], r[5])) for r in rows],
-    }
+    with _new_conn() as conn:
+        rows = conn.execute(
+            "SELECT rowid, username, expiry, plan, discord_id FROM users"
+        ).fetchall()
+
+    return {"ok": True, "users": [_row_to_dict(r) for r in rows]}
 
 
 @app.get("/users_full")
@@ -278,8 +419,6 @@ def get_users_full(api_key: str):
 
 
 if __name__ == "__main__":
-    import os
     import uvicorn
-
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
