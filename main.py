@@ -3,23 +3,13 @@ import sqlite3
 import hashlib
 import threading
 import os
-import json
-import requests as req
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
-
-# ── Cargar variables de entorno ───────────────────────────────────────────────
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 # ── Configuración ──────────────────────────────────────────────────────────────
-API_KEY        = os.environ.get("API_KEY", "X9qP_7ZkL_Opt_2026_ProKey#91")
-BACKUP_WEBHOOK = os.environ.get("BACKUP_WEBHOOK", "")
-VALID_PLANS    = ["free", "premium", "ultra", "owner"]
+API_KEY     = "X9qP_7ZkL_Opt_2026_ProKey#91"
+VALID_PLANS = ["free", "premium", "ultra", "owner"]
 
 DB_PATH  = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "users.db"))
-
-
-
 _db_lock = threading.Lock()
 
 # ── SQLite ─────────────────────────────────────────────────────────────────────
@@ -48,45 +38,7 @@ def _init_db():
 
 _init_db()
 
-# ── Backup ─────────────────────────────────────────────────────────────────────
-
-def _snapshot_all() -> list:
-    with _new_conn() as conn:
-        rows = conn.execute(
-            "SELECT username, password, expiry, plan, discord_id FROM users"
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def backup_and_push():
-    """
-    Genera snapshot de todos los usuarios y lo sube al canal via webhook.
-    """
-    users   = _snapshot_all()
-    payload = json.dumps({
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "users": users,
-    }, ensure_ascii=False, indent=2)
-
-    if not BACKUP_WEBHOOK:
-        print("[BACKUP] BACKUP_WEBHOOK no configurado, backup omitido.")
-        return False
-
-    try:
-        resp = req.post(
-            BACKUP_WEBHOOK,
-            files={"file": ("backup.json", payload.encode(), "application/json")},
-            data={"content": f"📦 **Backup** — {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC | {len(users)} usuarios"},
-            timeout=15,
-        )
-        ok = resp.status_code in (200, 204)
-        print(f"[BACKUP] {'OK' if ok else 'FAIL'} ({len(users)} usuarios) status={resp.status_code}")
-        return ok
-    except Exception as e:
-        print(f"[BACKUP] Error enviando webhook: {e}")
-        return False
-
-# ── Helpers internos ───────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 
 def hash_pass(p: str) -> str:
     return hashlib.sha256(p.encode()).hexdigest()
@@ -100,11 +52,20 @@ def _get_user(username: str):
         ).fetchone()
     return dict(row) if row else None
 
+
+def _row_to_dict(row) -> dict:
+    return {
+        "id":         row["rowid"],
+        "user":       row["username"],
+        "plan":       row["plan"],
+        "expiry":     row["expiry"],
+        "discord_id": row["discord_id"] or "",
+    }
+
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI()
 
 
-# ── Endpoint de restore (llamado por el bot al arrancar) ───────────────────────
 @app.post("/restore")
 def restore(data: dict):
     """El bot llama a este endpoint con el último backup cuando la DB está vacía."""
@@ -125,7 +86,7 @@ def restore(data: dict):
                 )
             conn.commit()
 
-    print(f"[RESTORE] Restaurados {len(users)} usuarios desde el bot.")
+    print(f"[RESTORE] Restaurados {len(users)} usuarios.")
     return {"ok": True, "restored": len(users)}
 
 
@@ -137,16 +98,6 @@ def db_empty(api_key: str):
     with _new_conn() as conn:
         count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     return {"ok": True, "empty": count == 0}
-
-@app.post("/backup/force")
-def force_backup(data: dict):
-    """Fuerza un backup manual ahora mismo."""
-    if data.get("api_key") != API_KEY:
-        return {"ok": False, "error": "invalid api key"}
-
-    ok = backup_and_push()
-    users = _snapshot_all()
-    return {"ok": ok, "users_backed_up": len(users)}
 
 
 @app.post("/login")
@@ -210,7 +161,6 @@ def create_user(data: dict):
             )
             conn.commit()
 
-    backup_and_push()
     return {"ok": True, "expiry": expiry}
 
 
@@ -271,7 +221,6 @@ def edit_user(data: dict):
                 )
             conn.commit()
 
-    backup_and_push()
     return {"ok": True}
 
 
@@ -296,7 +245,6 @@ def change_password(data: dict):
             )
             conn.commit()
 
-    backup_and_push()
     return {"ok": True, "status": "password updated"}
 
 
@@ -318,7 +266,6 @@ def change_plan(data: dict):
             conn.execute("UPDATE users SET plan=? WHERE username=?", (new_plan, user))
             conn.commit()
 
-    backup_and_push()
     return {"ok": True, "status": "plan updated"}
 
 
@@ -340,7 +287,6 @@ def set_license(data: dict):
             conn.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
             conn.commit()
 
-    backup_and_push()
     return {"ok": True, "status": "license set", "expiry": new_expiry}
 
 
@@ -366,7 +312,6 @@ def add_time(data: dict):
             conn.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
             conn.commit()
 
-    backup_and_push()
     return {"ok": True, "status": "time added", "expiry": new_expiry}
 
 
@@ -390,7 +335,6 @@ def remove_time(data: dict):
             conn.execute("UPDATE users SET expiry=? WHERE username=?", (new_expiry, user))
             conn.commit()
 
-    backup_and_push()
     return {"ok": True, "status": "time removed", "expiry": new_expiry}
 
 
@@ -409,18 +353,7 @@ def delete_user(data: dict):
             conn.execute("DELETE FROM users WHERE username=?", (user,))
             conn.commit()
 
-    backup_and_push()
     return {"ok": True, "status": "user deleted"}
-
-
-def _row_to_dict(row) -> dict:
-    return {
-        "id":         row["rowid"],
-        "user":       row["username"],
-        "plan":       row["plan"],
-        "expiry":     row["expiry"],
-        "discord_id": row["discord_id"] or "",
-    }
 
 
 @app.get("/users")
