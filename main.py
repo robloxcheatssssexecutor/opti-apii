@@ -47,7 +47,7 @@ def hash_pass(p: str) -> str:
 def _get_user(username: str):
     with _new_conn() as conn:
         row = conn.execute(
-            "SELECT username, password, expiry, plan, discord_id FROM users WHERE username=?",
+            "SELECT rowid, username, expiry, plan, discord_id FROM users WHERE username=?",
             (username,),
         ).fetchone()
     return dict(row) if row else None
@@ -55,8 +55,8 @@ def _get_user(username: str):
 
 def _row_to_dict(row) -> dict:
     return {
-        "username":   row["username"],
-        "password":   row["password"],
+        "id":         row["rowid"],
+        "user":       row["username"],
         "plan":       row["plan"],
         "expiry":     row["expiry"],
         "discord_id": row["discord_id"] or "",
@@ -197,7 +197,7 @@ def list_users(data: dict):
 
     with _new_conn() as conn:
         rows = conn.execute(
-            "SELECT username, password, expiry, plan, discord_id FROM users ORDER BY username"
+            "SELECT rowid, username, expiry, plan, discord_id FROM users ORDER BY username"
         ).fetchall()
 
     users = []
@@ -387,7 +387,7 @@ def get_users(api_key: str):
 
     with _new_conn() as conn:
         rows = conn.execute(
-            "SELECT username, password, expiry, plan, discord_id FROM users"
+            "SELECT rowid, username, expiry, plan, discord_id"
         ).fetchall()
 
     return {"ok": True, "users": [_row_to_dict(r) for r in rows]}
@@ -395,8 +395,22 @@ def get_users(api_key: str):
 
 @app.get("/users_full")
 def get_users_full(api_key: str):
-    return get_users(api_key)
 
+    if api_key != API_KEY:
+        return {"ok": False}
+
+    with _new_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT rowid, username, expiry, plan, discord_id
+            FROM users
+            """
+        ).fetchall()
+
+    return {
+        "ok": True,
+        "users": [_backup_row(r) for r in rows]
+    }
 
 if __name__ == "__main__":
     import uvicorn
