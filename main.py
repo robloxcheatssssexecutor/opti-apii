@@ -55,8 +55,8 @@ def _get_user(username: str):
 
 def _row_to_dict(row) -> dict:
     return {
-        "id":         row["rowid"],
-        "user":       row["username"],
+        "username":   row["username"],
+        "password":   row["password"],
         "plan":       row["plan"],
         "expiry":     row["expiry"],
         "discord_id": row["discord_id"] or "",
@@ -197,7 +197,7 @@ def list_users(data: dict):
 
     with _new_conn() as conn:
         rows = conn.execute(
-            "SELECT rowid, username, expiry, plan, discord_id FROM users ORDER BY username"
+            "SELECT username, password, expiry, plan, discord_id FROM users ORDER BY username"
         ).fetchall()
 
     users = []
@@ -387,7 +387,7 @@ def get_users(api_key: str):
 
     with _new_conn() as conn:
         rows = conn.execute(
-            "SELECT rowid, username, expiry, plan, discord_id FROM users"
+            "SELECT username, password, expiry, plan, discord_id FROM users"
         ).fetchall()
 
     return {"ok": True, "users": [_row_to_dict(r) for r in rows]}
