@@ -68,27 +68,51 @@ app = FastAPI()
 
 @app.post("/restore")
 def restore(data: dict):
-    """El bot llama a este endpoint con el último backup cuando la DB está vacía."""
-    if data.get("api_key") != API_KEY:
-        return {"ok": False, "error": "invalid api key"}
+    try:
+        if data.get("api_key") != API_KEY:
+            return {"ok": False, "error": "invalid api key"}
 
-    users = data.get("users")
-    if not isinstance(users, list):
-        return {"ok": False, "error": "users must be a list"}
+        users = data.get("users")
 
-    with _db_lock:
-        with _new_conn() as conn:
-            conn.execute("DELETE FROM users")
-            for u in users:
-                conn.execute(
-                    "INSERT OR REPLACE INTO users (username, password, expiry, plan, discord_id) VALUES (?,?,?,?,?)",
-                    (u["username"], u["password"], u["expiry"], u["plan"], u.get("discord_id", "")),
-                )
-            conn.commit()
+        if not isinstance(users, list):
+            return {"ok": False, "error": "users must be a list"}
 
-    print(f"[RESTORE] Restaurados {len(users)} usuarios.")
-    return {"ok": True, "restored": len(users)}
+        with _db_lock:
+            with _new_conn() as conn:
+                conn.execute("DELETE FROM users")
 
+                for u in users:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO users
+                        (username,password,expiry,plan,discord_id)
+                        VALUES (?,?,?,?,?)
+                        """,
+                        (
+                            u["username"],
+                            u["password"],
+                            u["expiry"],
+                            u["plan"],
+                            u.get("discord_id", "")
+                        ),
+                    )
+
+                conn.commit()
+
+        print(f"[RESTORE] Restaurados {len(users)} usuarios.")
+
+        return {
+            "ok": True,
+            "restored": len(users)
+        }
+
+    except Exception as e:
+        print("RESTORE ERROR:", repr(e))
+
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 @app.get("/db_empty")
 def db_empty(api_key: str):
