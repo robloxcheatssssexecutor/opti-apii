@@ -411,12 +411,15 @@ def get_users(api_key: str):
         return {"ok": False}
 
     with _new_conn() as conn:
-        rows = conn.execute(
-            "SELECT rowid, username, expiry, plan, discord_id"
-        ).fetchall()
+        rows = conn.execute("""
+            SELECT rowid, username, password, expiry, plan, discord_id
+            FROM users
+        """).fetchall()
 
-    return {"ok": True, "users": [_row_to_dict(r) for r in rows]}
-
+    return {
+        "ok": True,
+        "users": [_row_to_dict(r) for r in rows]
+    }
 
 @app.get("/users_full")
 def get_users_full(api_key: str):
