@@ -47,7 +47,9 @@ def hash_pass(p: str) -> str:
 def _get_user(username: str):
     with _new_conn() as conn:
         row = conn.execute(
-            "SELECT rowid, username, expiry, plan, discord_id FROM users WHERE username=?",
+            """SELECT rowid, username, password, expiry, plan, discord_id
+            FROM users
+            WHERE username=?""",
             (username,),
         ).fetchone()
     return dict(row) if row else None
@@ -55,11 +57,21 @@ def _get_user(username: str):
 
 def _row_to_dict(row) -> dict:
     return {
-        "id":         row["rowid"],
-        "user":       row["username"],
-        "plan":       row["plan"],
-        "expiry":     row["expiry"],
+        "id": row["rowid"],
+        "user": row["username"],
+        "password": row["password"],
+        "plan": row["plan"],
+        "expiry": row["expiry"],
         "discord_id": row["discord_id"] or "",
+    }
+
+def _backup_row(row):
+    return {
+        "username": row["username"],
+        "password": row["password"],
+        "expiry": row["expiry"],
+        "plan": row["plan"],
+        "discord_id": row["discord_id"] or ""
     }
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -396,21 +408,30 @@ def get_users(api_key: str):
 @app.get("/users_full")
 def get_users_full(api_key: str):
 
-    if api_key != API_KEY:
-        return {"ok": False}
+    try:
 
-    with _new_conn() as conn:
-        rows = conn.execute(
-            """
-            SELECT rowid, username, expiry, plan, discord_id
-            FROM users
-            """
-        ).fetchall()
+        if api_key != API_KEY:
+            return {"ok": False}
 
-    return {
-        "ok": True,
-        "users": [_backup_row(r) for r in rows]
-    }
+        with _new_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT rowid, username, password, expiry, plan, discord_id
+                FROM users
+                """
+            ).fetchall()
+
+        return {
+            "ok": True,
+            "users": [_backup_row(r) for r in rows]
+        }
+
+    except Exception as e:
+        print("USERS_FULL ERROR:", repr(e))
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 if __name__ == "__main__":
     import uvicorn
