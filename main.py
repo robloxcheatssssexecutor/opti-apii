@@ -10,6 +10,7 @@ API_KEY     = "X9qP_7ZkL_Opt_2026_ProKey#91"
 VALID_PLANS = ["free", "premium", "ultra", "owner"]
 
 DB_PATH  = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "users.db"))
+    print("DB_PATH =", DB_PATH)
 _db_lock = threading.Lock()
 
 # ── SQLite ─────────────────────────────────────────────────────────────────────
@@ -411,10 +412,15 @@ def get_users(api_key: str):
         return {"ok": False}
 
     with _new_conn() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        print("TOTAL USERS:", total)
+
         rows = conn.execute("""
             SELECT rowid, username, password, expiry, plan, discord_id
             FROM users
         """).fetchall()
+
+    print("ROWS:", len(rows))
 
     return {
         "ok": True,
