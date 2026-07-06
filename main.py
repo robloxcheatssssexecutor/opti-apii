@@ -437,10 +437,15 @@ def get_users_full(api_key: str):
             return {"ok": False}
 
         with _new_conn() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            print("USERS_FULL TOTAL:", total)
+
             rows = conn.execute("""
                 SELECT rowid, username, password, expiry, plan, discord_id
                 FROM users
             """).fetchall()
+
+        print("USERS_FULL ROWS:", len(rows))
 
         return {
             "ok": True,
