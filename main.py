@@ -376,21 +376,34 @@ def remove_time(data: dict):
 
 @app.post("/delete")
 def delete_user(data: dict):
-    if data.get("api_key") != API_KEY:
-        return {"ok": False, "error": "invalid api key"}
+    try:
+        if data.get("api_key") != API_KEY:
+            return {"ok": False, "error": "invalid api key"}
 
-    user = data.get("user", "").strip()
+        user = data.get("user", "").strip()
 
-    if not _get_user(user):
-        return {"ok": False, "error": "user not found"}
+        if not _get_user(user):
+            return {"ok": False, "error": "user not found"}
 
-    with _db_lock:
-        with _new_conn() as conn:
-            conn.execute("DELETE FROM users WHERE username=?", (user,))
-            conn.commit()
+        with _db_lock:
+            with _new_conn() as conn:
+                conn.execute(
+                    "DELETE FROM users WHERE username=?",
+                    (user,)
+                )
+                conn.commit()
 
-    return {"ok": True, "status": "user deleted"}
+        return {
+            "ok": True,
+            "status": "user deleted"
+        }
 
+    except Exception as e:
+        print("DELETE ERROR:", repr(e))
+        return {
+            "ok": False,
+            "error": str(e)
+        }
 
 @app.get("/users")
 def get_users(api_key: str):
@@ -407,19 +420,15 @@ def get_users(api_key: str):
 
 @app.get("/users_full")
 def get_users_full(api_key: str):
-
     try:
-
         if api_key != API_KEY:
             return {"ok": False}
 
         with _new_conn() as conn:
-            rows = conn.execute(
-                """
+            rows = conn.execute("""
                 SELECT rowid, username, password, expiry, plan, discord_id
                 FROM users
-                """
-            ).fetchall()
+            """).fetchall()
 
         return {
             "ok": True,
