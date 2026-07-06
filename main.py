@@ -10,7 +10,10 @@ API_KEY     = "X9qP_7ZkL_Opt_2026_ProKey#91"
 VALID_PLANS = ["free", "premium", "ultra", "owner"]
 
 DB_PATH  = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "users.db"))
+    print("=" * 50)
+    print("API INICIADA")
     print("DB_PATH =", DB_PATH)
+    print("=" * 50)
 _db_lock = threading.Lock()
 
 # ── SQLite ─────────────────────────────────────────────────────────────────────
